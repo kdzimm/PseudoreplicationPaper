@@ -3,4 +3,23 @@ This repository contains the R code used to carry out parameter estimation, corr
 
 There are four folders: Parameter_Estimation, Correlation, Type_1_Error, and Power. Each folder contains R code and descriptor file. 
 
+There is no package to install for these particular functions, but a number of dependencies are required. They are listed below. All code here was executed in R versions 3.5.1 or later. 
+
+R packages and dependencies for the example scripts provided are:
+
+ggplot2
+fitdistrplus
+MASS
+tidyr
+gdata
+Seurat
+data.table
+EnvStats
+purrr
+dplyr
+sn
+matrixStats
+fmsb
+
+
 With additional refinement, these scripts and tidbits of code will soon be coalesced into an R-package for others to easily access and use. Until then, we hope this code is helpful to other researchers. Any questions about our code can be sent to kdzimmer@wakehealth.edu. 
