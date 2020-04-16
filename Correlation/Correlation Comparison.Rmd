@@ -1,0 +1,185 @@
+---
+title: "Inter-Individual Correlation"
+output: html_notebook
+---
+
+
+```{r}
+library(dplyr)
+library(fmsb)
+library(matrixStats)
+library(data.table)
+library(purrr)
+library(gdata)
+library(ggplot2)
+
+###################
+# Inter functions #
+###################
+
+interpairwiseCor <- function(X){
+pairs <- combn(colnames(as.data.frame(X)), 2, simplify=FALSE)
+#pairs <- sample(pairs,20)
+ngenes_vector <- vector(mode="numeric",length=length(pairs))
+corr_vector <- vector(mode="numeric",length=length(pairs))
+for (i in 1:length(pairs)){
+        cell1 <- as.numeric(X[,pairs[[i]][1]])
+        cell2 <- as.numeric(X[,pairs[[i]][2]])
+        corr_vector[i] <- round(cor(cell1,cell2,method="spearman"),4)
+}
+corr_vector
+}
+
+
+interpairwiseConcordance <- function(X){
+pairs <- combn(colnames(as.data.frame(X)), 2, simplify=FALSE)
+#pairs <- sample(pairs,20)
+kappa_vector <- vector(mode="numeric",length=length(pairs))
+for (i in 1:length(pairs)){
+        cell1 <- as.numeric(X[,pairs[[i]][1]])
+        cell1 <- ifelse(cell1 == 0, 0, 1)
+        cell2 <- as.numeric(X[,pairs[[i]][2]])
+        cell2 <- ifelse(cell2 == 0, 0, 1)
+        if (mean(cell1) != 1 & mean(cell2) != 1){
+        kappa_vector[i] <- Kappa.test(cell1,cell2)$Result$estimate
+        } else {
+        kappa_vector[i] <- NA
+        }
+}
+kappa_vector
+}
+
+
+
+###########################
+# Read in and filter data #
+###########################
+#cells <- as.data.frame(fread("C:\\Users\\kdzimmer\\Documents\\Langefeld group\\Studies\\Dissertation\\scRNAseq\\Pseudoreplication\\Simulations\\Empirical Distributions\\NormalMucosaCounts.csv"))
+#cells <- as.data.frame(fread("C:\\Users\\kdzimmer\\Documents\\Langefeld group\\Studies\\Dissertation\\scRNAseq\\Pseudoreplication\\Simulations\\Empirical Distributions\\High_Quality_Cells_TPM_Information.csv"))
+#cells <- cells[,1:(ncol(cells)-81)]
+#cells <- cells[which(cells$IndividualID %in% c("H1","H2","H3","H4","H5","H6")),]
+#cells <- cells[which((cells$Inferred_Cell_Type == "pancreatic A cell")),c(-2,-4)]
+#cells <- cells[which(cells$Inferred_Cell_Type == "pancreatic ductal cell"),c(-2,-4)]
+#cells <- cells[which(cells$Inferred_Cell_Type == "beta cell"),c(-2,-4)]
+#cells <- cells[,c(TRUE,TRUE,colMeans(cells[,c(-1,-2)]) > 0)]
+cells <- allgenes[,-3]
+
+###########################
+# Pull uncorrelated genes #
+###########################
+
+reduced <- cells[,c(-1,-2)]
+genelist <- colnames(reduced)
+uncorrelatedgenes <- cells[,1:2]
+
+for (i in 1:500){
+  genename <- sample(genelist,1)
+  drawngene <- reduced[,genename]
+  uncorrelatedgenes <- cbind(uncorrelatedgenes,drawngene)
+  correlations <- abs(cor(drawngene,reduced))
+  genelist <- names(correlations[,which(correlations < 0.25)])
+  reduced <- reduced[,genelist]
+  if (ncol(reduced) < 10) break
+}
+
+cells <- as.data.frame(uncorrelatedgenes)
+
+################################
+# Pull one cell per individual #
+################################
+
+cells <- split(cells[,c(-1,-2)],cells$IndividualID)
+
+pullonecell <- function(x) {
+        x[sample(1:nrow(x),1),]
+}
+
+onecell <- function(x) {
+        sapply(cells,pullonecell)
+}
+
+#################################
+# Compute pairwise correlations #
+#################################
+
+n_rep <- 10
+
+repmeans <- 1:n_rep %>% map(onecell) %>% map(interpairwiseCor)
+inter_corr <- unmatrix(do.call("rbind",repmeans))
+inter_corr <- cbind(rep("Inter_Alpha_Correlation",length(inter_corr)),inter_corr)
+inter_corr <- as.data.frame(cbind(rep("Inter",nrow(inter_corr)),inter_corr))
+colnames(inter_corr) <- c("Type","CellType","Correlation")
+inter_corr$Correlation <- as.numeric(as.character(inter_corr$Correlation))
+hist(inter_corr$Correlation)
+
+repmeans <- 1:n_rep %>% map(onecell) %>% map(interpairwiseConcordance)
+inter_agree <- unmatrix(do.call("rbind",repmeans))
+inter_agree <- cbind(rep("Inter_Alpha_Concordance",length(inter_agree)),inter_agree)
+inter_agree <- as.data.frame(cbind(rep("Inter",nrow(inter_agree)),inter_agree))
+colnames(inter_agree) <- c("Type","CellType","Kappa")
+inter_agree$Kappa <- as.numeric(as.character(inter_agree$Kappa))
+hist(inter_agree$Kappa)
+
+###################
+# Intra functions #
+###################
+
+intrapairwiseCor <- function(X){
+pairs <- combn(rownames(as.data.frame(X)), 2, simplify=FALSE)
+#pairs <- sample(pairs,20)
+corr_vector <- vector(mode="numeric",length=length(pairs))
+for (i in 1:length(pairs)){
+        cell1 <- as.numeric(X[pairs[[i]][1],])
+        cell2 <- as.numeric(X[pairs[[i]][2],])
+        corr_vector[i] <- round(cor(cell1,cell2,method="spearman"),4)
+}
+corr_vector
+}
+
+
+intrapairwiseConcordance <- function(X){
+pairs <- combn(rownames(as.data.frame(X)), 2, simplify=FALSE)
+#pairs <- sample(pairs,20)
+kappa_vector <- vector(mode="numeric",length=length(pairs))
+for (i in 1:length(pairs)){
+        cell1 <- as.numeric(X[pairs[[i]][1],])
+        cell1 <- ifelse(cell1 == 0, 0, 1)
+        cell2 <- as.numeric(X[pairs[[i]][2],])
+        cell2 <- ifelse(cell2 == 0, 0, 1)
+        if (mean(cell1) != 1 & mean(cell2) != 1){
+        kappa_vector[i] <- Kappa.test(cell1,cell2)$Result$estimate
+        } else {
+        kappa_vector[i] <- NA
+        }
+}
+kappa_vector
+}
+
+cells <- as.data.frame(uncorrelatedgenes)
+cells <- split(cells[,c(-1,-2)],cells$IndividualID)
+
+intra_corr <- as.numeric(unlist(sapply(cells,intrapairwiseCor)))
+intra_corr <- cbind(rep("Intra_Alpha_Correlation",length(intra_corr)),intra_corr)
+intra_corr <- as.data.frame(cbind(rep("Intra",nrow(intra_corr)),intra_corr))
+colnames(intra_corr) <- c("Type","CellType","Correlation")
+intra_corr$Correlation <- as.numeric(as.character(intra_corr$Correlation))
+hist(intra_corr$Correlation)
+
+intra_agree <- as.numeric(unlist(sapply(cells,intrapairwiseConcordance)))
+intra_agree <- cbind(rep("Intra_Alpha_Concordance",length(intra_agree)),intra_agree)
+intra_agree <- as.data.frame(cbind(rep("Intra",nrow(intra_agree)),intra_agree))
+colnames(intra_agree) <- c("Type","CellType","Kappa")
+intra_agree$Kappa <- as.numeric(as.character(intra_agree$Kappa))
+hist(intra_agree$Kappa)
+
+allcorr <- rbind(inter_corr,intra_corr)
+allagree <- rbind(inter_agree,intra_agree)
+```
+
+```{r}
+ggplot(allcorr, aes(x=CellType,y=Correlation,fill=Type)) + geom_boxplot() + theme_classic() + scale_y_continuous(limits=c(0.2,0.6),breaks=(seq(-10,10,1)/10)) + theme(axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank()) + ggsave("06_Beta_Simulated_Correlation.png")
+ggplot(allagree, aes(x=CellType,y=Kappa,fill=Type)) + geom_boxplot() + theme_classic() + scale_y_continuous(breaks=(seq(-10,10,1)/10))
+
+```
+
+
