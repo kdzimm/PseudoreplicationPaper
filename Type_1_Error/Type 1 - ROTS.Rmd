@@ -1,0 +1,70 @@
+---
+title: "Type 1 - ROTS"
+output: html_notebook
+---
+
+
+```{r}
+##############################################
+##### NEED TO ESTIMATE PARAMETERS FIRST ######
+##############################################
+
+##########################################################
+# Run simulation example html prior to using this script #
+##########################################################
+
+###################
+# Full Simulation #
+###################
+
+ngenes <- 100
+n.per.group <- 5
+ncontrols <- n.per.group
+ncases <- n.per.group
+mean.number.cells.per.person <- 150
+ncells.per.control <- rpois(n=ncontrols,lambda=mean.number.cells.per.person)
+ncells.per.case <- rpois(n=ncases,lambda=mean.number.cells.per.person)
+ncells <- sum(ncells.per.case) + sum(ncells.per.control)
+allgenes <- as.data.frame(replicate(ngenes,simulate()))
+
+############################
+# Format data for analysis #
+############################
+
+
+colnames(allgenes) <- paste0("Gene",1:ngenes)
+allgenes <- data.frame(allgenes)
+allgenes$ToSep <- rownames(allgenes)
+allgenes$wellKey <- rownames(allgenes)
+allgenes <- separate(allgenes,ToSep,c("Status","Donor_Number","Cell","Cell_Number"),sep="_")
+allgenes$Cell_Number <- paste0("Cell_",allgenes$Cell_Number)
+allgenes$DonorID <- paste0(allgenes$Status,"_",allgenes$Donor_Number)
+allgenes <- allgenes[,c((ngenes+5),(ngenes+6),(ngenes +1),1:ngenes)]
+counts <- na.omit(as.matrix(t(allgenes[,-1:-3])))
+pheno <- allgenes[,1:3]
+genecounts <- as.matrix(t(allgenes[,c(-1,-2,-3)]))
+coldata <- allgenes[,1:3]
+coldata$Status <- as.factor(coldata$Status)
+genecounts <- genecounts[which(apply(genecounts, 1, mean) > 0), ]
+genecounts <- genecounts[,rownames(coldata)]
+coldata$Status <- ifelse(coldata$Status == "Control",0,1)
+coldata$DonorID <- as.factor(coldata$DonorID)
+genecounts <- genecounts[,rownames(coldata)]
+results <- suppressMessages(ROTS::ROTS(data = genecounts, groups = coldata$Status, B = 1000, K = 500, seed = 4119))
+results <- suppressMessages(ROTS::summary.ROTS(results, num.genes=nrow(genecounts)))
+results <- as.data.frame(results)
+results <- stats::na.omit(results)
+pvalues <- as.numeric(results$pvalue)
+
+
+################
+# Type 1 Error #
+################
+
+pval <- 0.05
+signif <- ifelse(pvalues < pval, 1, 0)
+rate <- mean(signif)
+message(paste0("Type 1 error for ",pval," is: ", rate))
+
+```
+
