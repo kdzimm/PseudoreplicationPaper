@@ -1,0 +1,124 @@
+---
+title: "Power"
+output: html_notebook
+---
+
+
+
+```{r}
+##############################################
+##### NEED TO ESTIMATE PARAMETERS FIRST ######
+##############################################
+
+###################
+# Full Simulation #
+###################
+
+ngenes <- 100
+n.per.group <- 5
+ncontrols <- n.per.group
+ncases <- n.per.group
+mean.number.cells.per.person <- 150
+ncells.per.control <- rpois(n=ncontrols,lambda=mean.number.cells.per.person)
+ncells.per.case <- rpois(n=ncases,lambda=mean.number.cells.per.person)
+ncells <- sum(ncells.per.case) + sum(ncells.per.control)
+
+allcells <- NULL
+    
+simulate <- function(foldchange=1){
+  
+  grandmean <- rgamma(n=1,shape=grandmean.shape,rate=grandmean.rate)
+  stddev.of.within.means <- (inter.beta1)*grandmean
+  foldchange <- ifelse(stats::rbinom(n=1, size=1, prob = 0.5) == 1, foldchange, 1/foldchange)
+  prob.zero <- rgamma(n=1,shape=drop.shape,rate=drop.rate)
+  prob.zero <- ifelse(prob.zero > 1, rgamma(n=1,shape=drop.shape,rate=drop.rate), prob.zero)
+  drop.sd <- dropoutstd.beta0 + dropoutstd.beta1*prob.zero + dropoutstd.beta2*(prob.zero**2)
+  drop.sd <- ifelse(drop.sd < 0, 0, drop.sd)
+  prob.zero <- rnorm(n=1,mean = prob.zero, sd = drop.sd)
+  prob.zero <- ifelse(prob.zero < 0, 0, prob.zero)
+  prob.zero <- ifelse(prob.zero > 1, 1, prob.zero)
+  prob.zero <- 1 - prob.zero
+  
+  for (i in 1:n.per.group){
+
+    controlmean <- grandmean + rnorm(n=1,mean=0,sd=stddev.of.within.means)
+    controlmean <- ifelse(controlmean < 0, 0.0000001, controlmean)
+    control.size <- exp(intra.beta0 + (intra.beta1/controlmean))
+    controlcells <- rnbinom(n=ncells.per.control[i],mu = controlmean, size = control.size)
+    controlcells <- ifelse(rbinom(n=length(controlcells),size=1,prob=prob.zero) == 1, 0, controlcells)
+    names(controlcells) <- paste0("Control_",i,"_Cell_",1:ncells.per.control[i])
+    allcells <- c(allcells,controlcells)
+  }
+  
+  for (i in 1:n.per.group){
+    casemean <- (grandmean*foldchange) + rnorm(n=1,mean=0,sd=stddev.of.within.means)
+    casemean <- ifelse(casemean < 0, 0.0000001, casemean)
+    case.size <- exp(intra.beta0 + (intra.beta1/casemean))
+    casecells <- rnbinom(n=ncells.per.case[i],mu = casemean, size = case.size)
+    casecells <- ifelse(rbinom(n=length(casecells),size=1,prob=prob.zero) == 1, 0, casecells)
+    names(casecells) <- paste0("Case_",i,"_Cell_",1:ncells.per.case[i])
+    
+    allcells <- c(allcells,casecells)
+  }
+  
+  allcells
+}
+
+############################
+# Format data for analysis #
+############################
+
+allgenes <- as.data.frame(replicate(ngenes,simulate(foldchange=2)))
+colnames(allgenes) <- paste0("Gene",1:ngenes)
+allgenes <- data.frame(allgenes)
+allgenes$ToSep <- rownames(allgenes)
+allgenes$wellKey <- rownames(allgenes)
+allgenes <- separate(allgenes,ToSep,c("Status","Donor_Number","Cell","Cell_Number"),sep="_")
+allgenes$Cell_Number <- paste0("Cell_",allgenes$Cell_Number)
+allgenes$DonorID <- paste0(allgenes$Status,"_",allgenes$Donor_Number)
+allgenes <- allgenes[,c((ngenes+5),(ngenes+6),(ngenes +1),1:ngenes)]
+counts <- na.omit(as.matrix(t(allgenes[,-1:-3])))
+pheno <- allgenes[,1:3]
+genecounts <- as.matrix(t(allgenes[,c(-1,-2,-3)]))
+coldata <- allgenes[,1:3]
+coldata$Status <- as.factor(coldata$Status)
+genecounts <- genecounts[which(apply(genecounts, 1, mean) > 5), ]
+genecounts <- genecounts[,rownames(coldata)]
+log2counts <- log2(genecounts + 1)
+
+fData <- data.frame(primerid=rownames(genecounts))
+sca <- suppressMessages(MAST::FromMatrix(exprsArray=log2counts, cData=coldata, fData=fData))
+cdr2 <- colSums(SummarizedExperiment::assay(sca)>0)
+SummarizedExperiment::colData(sca)$ngeneson <- scale(cdr2)
+SummarizedExperiment::colData(sca)$Status <-
+factor(SummarizedExperiment::colData(sca)$Status)
+SummarizedExperiment::colData(sca)$DonorID <-
+factor(SummarizedExperiment::colData(sca)$DonorID)
+
+zlmCond <- suppressMessages(MAST::zlm(~ ngeneson + Status + (1 | DonorID),
+                                            sca, method='glmer',ebayes = F,
+                                            strictConvergence = FALSE))
+
+summaryCond <- suppressMessages(MAST::summary(zlmCond,
+                                                    doLRT='StatusControl'))
+summaryDt <- summaryCond$datatable
+fcHurdle <- merge(summaryDt[summaryDt$contrast=='StatusControl'
+                                  & summaryDt$component=='logFC', c(1,7,5,6,8)],
+                        summaryDt[summaryDt$contrast=='StatusControl'
+                                  & summaryDt$component=='H', c(1,4)],
+                        by = 'primerid')
+
+fcHurdle <- stats::na.omit(as.data.frame(fcHurdle))
+
+#########
+# Power #
+#########
+
+pval <- 0.05
+signif <- ifelse(fcHurdle[,6] < pval, 1, 0)
+rate <- mean(signif)
+message(paste0("Power for ",pval," is: ", rate))
+
+```
+
+
