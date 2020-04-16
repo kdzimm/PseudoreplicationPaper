@@ -1,0 +1,449 @@
+---
+title: "Simulating Hierarchical Single-Cell RNA-Seq Data"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+##Open the dataset and load libraries
+Dataset should be in format after these steps
+
+|CellID | IndividualID | GENE | GENE2 | GENE3 | 
+|:------|:-------------|:-----|:------|:------|
+|Cell1  |   Ind1       | 24.3 | 188.6 | 172.5 |
+|Cell1  |   Ind1       | 21.2 | 211.2 | 74.8  |
+|Cell1  |   Ind1       | 11.2 | 137.3 | 52.8  |
+...
+
+```{r, warning = FALSE}
+suppressPackageStartupMessages({
+library(ggplot2)
+library(fitdistrplus)
+library(MASS)
+library(tidyr)
+library(gdata)
+library(Seurat)
+library(data.table)
+library(EnvStats)
+library(purrr)
+library(dplyr)
+library(sn)
+})
+
+
+cells <- as.data.frame(fread("C:\\Users\\kdzimmer\\Documents\\Langefeld group\\Studies\\Dissertation\\scRNAseq\\Pseudoreplication\\Simulations\\Empirical Distributions\\High_Quality_Cells_TPM_Information.csv"))
+cells <- cells[,1:(ncol(cells)-81)] #Remove ERCC Genes
+cells <- cells[which(cells$Inferred_Cell_Type == "pancreatic A cell"),c(-2,-4)] #Keep alpha cells
+
+
+##########
+# Filter #
+##########
+
+rownames(cells) <- cells$CellID
+ids <- cells[,c(1,2)]
+cells <- cells[,c(-1,-2)]
+cells <- cells[,which(apply(cells,2,mean) > 0)]
+ids <- ids[which(apply(cells,1,mean) > 0),]
+cells <- cells[which(apply(cells,1,mean) > 0),]
+cells <- cbind(ids,cells)
+cells[1:5,1:5]
+```
+
+##Remove gene-gene correlation structure 
+
+```{r, message = F, results = "hide"}
+
+###############################
+# Pull uncorrelated genes #
+###############################
+
+temp.reduced <- cells[,c(-1,-2)]
+temp.genelist <- colnames(temp.reduced)
+temp.uncorrelatedgenes <- cells[,c(1,2)]
+
+for (i in 1:500){
+ temp.genename <- sample(temp.genelist,1)
+ temp.drawngene <- temp.reduced[,temp.genename]
+ temp.uncorrelatedgenes <- cbind(temp.uncorrelatedgenes,temp.drawngene)
+ temp.correlations <- abs(cor(temp.drawngene,temp.reduced))
+ temp.genelist <- names(temp.correlations[,which(temp.correlations < 0.25)])
+ temp.reduced <- temp.reduced[,temp.genelist]
+ if (ncol(temp.reduced) < 10) break
+}
+
+cells <- temp.uncorrelatedgenes
+counts <- as.matrix(t(cells[,c(-1,-2)]))
+pheno <- cells[,1:2]
+
+#Create a Seurat Dataset
+
+all <- CreateSeuratObject(counts, project="All_Cells")
+rownames(pheno) <- pheno[,1]
+pheno$IndividualID <- as.factor(pheno$IndividualID)
+pheno <- pheno[colnames(all),]
+all(rownames(pheno) %in% colnames(all))
+all(rownames(pheno) == colnames(all))
+all <- AddMetaData(object = all, metadata = pheno)
+all <- NormalizeData(all)
+all <- FindVariableFeatures(all,do.plot=F)
+all <- ScaleData(all)
+all <- RunPCA(all)
+all <- FindNeighbors(all)
+all <- FindClusters(all)
+all <- RunTSNE(all, check_duplicates = F)
+```
+
+##Visualize with tSNE plot
+
+```{r}
+DimPlot(object = all,reduction = "tsne",group.by="IndividualID")
+
+```
+
+
+##Manipulate data and compute parameters
+
+```{r}
+
+###############################################
+# Compute intra individual mean and variances #
+###############################################
+computevar <- function(x){tapply(x,cells[,2],function(a){stats::var(a[a != 0])})}
+temp.intravar <- sapply(cells[,c(-1,-2)],computevar)
+rownames(temp.intravar) <- paste0(rownames(temp.intravar),"_Var")
+
+computemeans <- function(x){tapply(x,cells[,2],function(a){mean(a[a != 0])})}
+temp.intrameans <- sapply(cells[,c(-1,-2)],computemeans)
+rownames(temp.intrameans) <- paste0(rownames(temp.intrameans),"_Mean")
+
+computedrop <- function(x){tapply(x,cells[,2],function(a){length(a[which(a == 0)])/length(a)})}
+temp.drop <- sapply(cells[,c(-1,-2)],computedrop)
+rownames(temp.drop) <- paste0(rownames(temp.drop),"_Drop")
+
+temp.disp <- as.data.frame(t(rbind(temp.intravar,temp.intrameans)))
+
+nindividuals <- length(unique(cells[,2]))
+
+for (i in 1:nindividuals){
+temp.disp[,(i+(nindividuals*2))] <- (temp.disp[,(nindividuals+i)]**2)/(temp.disp[,i] - temp.disp[,(nindividuals+i)])
+}
+
+temp.disp <- temp.disp[,(1+(nindividuals*2)):(nindividuals*3)]
+temp.intra <- as.data.frame(t(do.call("rbind",list(temp.intrameans,temp.intravar,temp.drop))))
+
+intravar <- na.omit(as.data.frame(cbind(c(temp.intravar),c(temp.intrameans))))
+colnames(intravar) <- c("IntraVar","IntraMean")
+intravar$Dispersion <- (intravar$IntraMean**2)/((intravar$IntraVar) - intravar$IntraMean)
+
+####################################################
+# Compute grand mean and inter individual variance #
+####################################################
+
+
+temp.intra$InterStD <- apply(temp.intra[,1:nindividuals],1,function(a){stats::sd(a[!is.na(a)])})
+temp.intra$GrandMean <- apply(temp.intra[,1:nindividuals],1,function(a){mean(a[!is.na(a)])})
+temp.intra$IntraVar <- apply(temp.intra[,(1+nindividuals):(nindividuals*2)],1,median)
+temp.intra$DropOut <- apply(temp.intra[,(1+(nindividuals*2)):(nindividuals*3)],1,mean)
+temp.intra$DropOutStD <- apply(temp.intra[,(1+(nindividuals*2)):(nindividuals*3)],1,function(a){stats::sd(a[!is.na(a)])})
+temp.intra$Dispersion <- apply(temp.disp,1,mean)
+fullsummary <- temp.intra
+
+rm(cells)
+rm(list = ls()[grepl("temp", ls())])
+```
+
+##Plot distributions of parameters 
+Where relevant, visualize their relationships with one another
+Store relevant information about each of the parameters for simulation step
+
+
+```{r}
+##########################################
+# Fit distribution of dropout with Gamma #
+##########################################
+temp.summary <- fullsummary
+temp.summary$DropOut <- 1 - temp.summary$DropOut
+temp.summary <- temp.summary[which(temp.summary$GrandMean > 0),]
+temp.summary <- temp.summary[which(temp.summary$DropOut > 0),]
+
+ggplot(temp.summary, aes(DropOut)) + geom_histogram(aes(y=..density..),fill="cornflowerblue",color = "black") + ylab("Density")
+
+temp.fit.gamma <- fitdist(temp.summary$DropOut, "gamma", method="mle")
+drop.shape <- temp.fit.gamma$estimate[1]
+drop.rate <- temp.fit.gamma$estimate[2]
+
+##############
+# DropoutStD #
+##############
+
+temp.mean.var <- glm(data = temp.summary, DropOutStD ~ DropOut + I(DropOut**2), family = gaussian(link = "identity"))
+temp.model.summary <- summary(temp.mean.var)
+dropoutstd.beta0 <- temp.model.summary$coefficients[1,1]
+dropoutstd.beta1 <- temp.model.summary$coefficients[2,1]
+dropoutstd.beta2 <- temp.model.summary$coefficients[3,1]
+
+##############################################
+# Fit distribution of grand means with Gamma #
+##############################################
+temp.summary <- temp.summary[which(temp.summary$GrandMean > 0),]
+
+ggplot(temp.summary, aes(GrandMean)) + geom_histogram(aes(y=..density..),fill="cornflowerblue",color = "black") + xlim(c(0,200)) + ylab("Density")
+
+temp.fit.gamma <- fitdist(temp.summary$GrandMean, "gamma", method="mle")
+grandmean.shape <- temp.fit.gamma$estimate[1]
+grandmean.rate <- temp.fit.gamma$estimate[2]
+
+
+#################################################
+# Fit inter-individual SD as a function of mean #
+#################################################
+ggplot(temp.summary, aes(InterStD)) + geom_histogram(aes(y=..density..),fill="cornflowerblue",color = "black") + xlim(c(0,100)) + ylab("Density")
+
+ggplot(temp.summary,aes(x=GrandMean,y=InterStD)) + geom_point() + stat_smooth(method="glm",formula = y ~ 0 + x, method.args = list(family = gaussian(link = "identity")), size = 1.6) + xlim(c(0,200)) + ylim(c(0,100))
+
+temp.mean.inter <- glm(data = temp.summary, InterStD ~ 0 + GrandMean, family = gaussian(link = "identity"))
+temp.model.summary <- summary(temp.mean.inter)
+inter.beta1 <- temp.model.summary$coefficients[1,1]
+
+
+###########################################################
+# Fit intra-individual variance as a function of the mean #
+###########################################################
+intravar <- intravar[which(intravar$Dispersion > 0 & intravar$Dispersion < 1000),]
+
+ggplot(intravar,aes(x=IntraMean,y=Dispersion)) + geom_point() + stat_smooth(method="glm",formula = y ~ I(1/x), method.args = list(family = gaussian(link = "log")), size = 1.6) + xlim(c(0,50)) + ylim(c(0,100))
+
+temp.mean.intra <- glm(data = intravar, Dispersion ~ I(1/IntraMean), family = gaussian(link = "log"))
+temp.model.summary <- summary(temp.mean.intra)
+intra.beta0 <- temp.model.summary$coefficients[1,1]
+intra.beta1 <- temp.model.summary$coefficients[2,1]
+
+rm(list = ls()[grepl("temp", ls())])
+```
+
+##Build a simulation function
+Set desired numbers for number of genes, number of individuals, and mean number of cells per person. 
+Simulate n number of genes.
+
+```{r}
+###################
+# Full Simulation #
+###################
+
+ngenes <- 500
+n.per.group <- 5
+ncontrols <- n.per.group
+ncases <- n.per.group
+mean.number.cells.per.person <- 50
+ncells.per.control <- rpois(n=ncontrols,lambda=mean.number.cells.per.person)
+ncells.per.case <- rpois(n=ncases,lambda=mean.number.cells.per.person)
+ncells <- sum(ncells.per.case) + sum(ncells.per.control)
+
+allcells <- NULL
+    
+simulate <- function(foldchange=1){
+  
+  grandmean <- rgamma(n=1,shape=grandmean.shape,rate=grandmean.rate)
+  stddev.of.within.means <- (inter.beta1)*grandmean
+  foldchange <- ifelse(stats::rbinom(n=1, size=1, prob = 0.5) == 1, foldchange, 1/foldchange)
+  prob.zero <- rgamma(n=1,shape=drop.shape,rate=drop.rate)
+  prob.zero <- ifelse(prob.zero > 1, rgamma(n=1,shape=drop.shape,rate=drop.rate), prob.zero)
+  drop.sd <- dropoutstd.beta0 + dropoutstd.beta1*prob.zero + dropoutstd.beta2*(prob.zero**2)
+  drop.sd <- ifelse(drop.sd < 0, 0, drop.sd)
+  prob.zero <- rnorm(n=1,mean = prob.zero, sd = drop.sd)
+  prob.zero <- ifelse(prob.zero < 0, 0, prob.zero)
+  prob.zero <- ifelse(prob.zero > 1, 1, prob.zero)
+  prob.zero <- 1 - prob.zero
+  
+  for (i in 1:n.per.group){
+
+    controlmean <- grandmean + rnorm(n=1,mean=0,sd=stddev.of.within.means)
+    controlmean <- ifelse(controlmean < 0, 0.0000001, controlmean)
+    control.size <- exp(intra.beta0 + (intra.beta1/controlmean))
+    controlcells <- rnbinom(n=ncells.per.control[i],mu = controlmean, size = control.size)
+    controlcells <- ifelse(rbinom(n=length(controlcells),size=1,prob=prob.zero) == 1, 0, controlcells)
+    names(controlcells) <- paste0("Control_",i,"_Cell_",1:ncells.per.control[i])
+    allcells <- c(allcells,controlcells)
+  }
+  
+  for (i in 1:n.per.group){
+    casemean <- (grandmean*foldchange) + rnorm(n=1,mean=0,sd=stddev.of.within.means)
+    casemean <- ifelse(casemean < 0, 0.0000001, casemean)
+    case.size <- exp(intra.beta0 + (intra.beta1/casemean))
+    casecells <- rnbinom(n=ncells.per.case[i],mu = casemean, size = case.size)
+    casecells <- ifelse(rbinom(n=length(casecells),size=1,prob=prob.zero) == 1, 0, casecells)
+    names(casecells) <- paste0("Case_",i,"_Cell_",1:ncells.per.case[i])
+    
+    allcells <- c(allcells,casecells)
+  }
+  
+  allcells
+}
+
+allgenes <- as.data.frame(replicate(ngenes,simulate()))
+```
+
+##tSNE plot of simulated data
+
+```{r, message = F, results = "hide"}
+allgenes <- allgenes[which(apply(allgenes,1,mean) > 0),]
+colnames(allgenes) <- paste0("Gene",1:ngenes)
+allgenes <- data.frame(allgenes)
+allgenes$ToSep <- rownames(allgenes)
+allgenes$wellKey <- rownames(allgenes)
+allgenes <- separate(allgenes,ToSep,c("Status","Donor_Number","Cell","Cell_Number"),sep="_")
+allgenes$Cell_Number <- paste0("Cell_",allgenes$Cell_Number)
+allgenes$IndividualID <- paste0(allgenes$Status,"_",allgenes$Donor_Number)
+allgenes <- allgenes[,c((ngenes+5),(ngenes+6),(ngenes +1),1:ngenes)]
+counts <- na.omit(as.matrix(t(allgenes[,-1:-3])))
+pheno <- allgenes[,1:3]
+
+#Create a Seurat Dataset
+
+all <- CreateSeuratObject(counts, project="All_Cells", min.cells=3)
+rownames(pheno) <- pheno[,1]
+pheno <- pheno[,-1]
+pheno$Status <- as.factor(pheno$Status)
+pheno$DonorID <- as.factor(pheno$IndividualID)
+pheno <- pheno[colnames(all),]
+all(rownames(pheno) %in% colnames(all))
+all(rownames(pheno) == colnames(all))
+all <- AddMetaData(object = all, metadata = pheno)
+all <- NormalizeData(all)
+all <- FindVariableFeatures(all,do.plot=F)
+all <- ScaleData(all)
+all <- RunPCA(all)
+all <- FindNeighbors(all)
+all <- FindClusters(all)
+all <- RunTSNE(all, check_duplicates=F)
+```
+
+
+```{r}
+DimPlot(object = all,reduction = "tsne",group.by="IndividualID")
+
+```
+
+Recompute parameters and visualize parameters of simulated data. 
+
+```{r}
+cells <- allgenes[,-3]
+ids <- cells[,c(1,2)]
+cells <- cells[,c(-1,-2)]
+cells <- cells[,which(apply(cells,2,mean) > 0)]
+ids <- ids[which(apply(cells,1,mean) > 0),]
+cells <- cells[which(apply(cells,1,mean) > 0),]
+cells <- cbind(ids,cells)
+
+###############################################
+# Compute intra individual mean and variances #
+###############################################
+computevar <- function(x){tapply(x,cells[,2],function(a){stats::var(a[a != 0])})}
+temp.intravar <- sapply(cells[,c(-1,-2)],computevar)
+rownames(temp.intravar) <- paste0(rownames(temp.intravar),"_Var")
+
+computemeans <- function(x){tapply(x,cells[,2],function(a){mean(a[a != 0])})}
+temp.intrameans <- sapply(cells[,c(-1,-2)],computemeans)
+rownames(temp.intrameans) <- paste0(rownames(temp.intrameans),"_Mean")
+
+computedrop <- function(x){tapply(x,cells[,2],function(a){length(a[which(a == 0)])/length(a)})}
+temp.drop <- sapply(cells[,c(-1,-2)],computedrop)
+rownames(temp.drop) <- paste0(rownames(temp.drop),"_Drop")
+
+temp.disp <- as.data.frame(t(rbind(temp.intravar,temp.intrameans)))
+
+nindividuals <- length(unique(cells[,2]))
+
+for (i in 1:nindividuals){
+temp.disp[,(i+(nindividuals*2))] <- (temp.disp[,(nindividuals+i)]**2)/(temp.disp[,i] - temp.disp[,(nindividuals+i)])
+}
+
+temp.disp <- temp.disp[,(1+(nindividuals*2)):(nindividuals*3)]
+temp.intra <- as.data.frame(t(do.call("rbind",list(temp.intrameans,temp.intravar,temp.drop))))
+
+intravar <- na.omit(as.data.frame(cbind(c(temp.intravar),c(temp.intrameans))))
+colnames(intravar) <- c("IntraVar","IntraMean")
+intravar$Dispersion <- (intravar$IntraMean**2)/((intravar$IntraVar) - intravar$IntraMean)
+
+####################################################
+# Compute grand mean and inter individual variance #
+####################################################
+
+
+temp.intra$InterStD <- apply(temp.intra[,1:nindividuals],1,function(a){stats::sd(a[!is.na(a)])})
+temp.intra$GrandMean <- apply(temp.intra[,1:nindividuals],1,function(a){mean(a[!is.na(a)])})
+temp.intra$IntraVar <- apply(temp.intra[,(1+nindividuals):(nindividuals*2)],1,median)
+temp.intra$DropOut <- apply(temp.intra[,(1+(nindividuals*2)):(nindividuals*3)],1,mean)
+temp.intra$DropOutStD <- apply(temp.intra[,(1+(nindividuals*2)):(nindividuals*3)],1,function(a){stats::sd(a[!is.na(a)])})
+temp.intra$Dispersion <- apply(temp.disp,1,mean)
+fullsummary <- temp.intra
+
+rm(cells)
+rm(list = ls()[grepl("temp", ls())])
+
+##########################################
+# Fit distribution of dropout with Gamma #
+##########################################
+temp.summary <- fullsummary
+temp.summary$DropOut <- 1 - temp.summary$DropOut
+temp.summary <- temp.summary[which(temp.summary$GrandMean > 0),]
+temp.summary <- temp.summary[which(temp.summary$DropOut > 0),]
+
+ggplot(temp.summary, aes(DropOut)) + geom_histogram(aes(y=..density..),fill="cornflowerblue",color = "black") + ylab("Density")
+
+temp.fit.gamma <- fitdist(temp.summary$DropOut, "gamma", method="mle")
+drop.shape <- temp.fit.gamma$estimate[1]
+drop.rate <- temp.fit.gamma$estimate[2]
+
+##############
+# DropoutStD #
+##############
+
+temp.mean.var <- glm(data = temp.summary, DropOutStD ~ DropOut + I(DropOut**2), family = gaussian(link = "identity"))
+temp.model.summary <- summary(temp.mean.var)
+dropoutstd.beta0 <- temp.model.summary$coefficients[1,1]
+dropoutstd.beta1 <- temp.model.summary$coefficients[2,1]
+dropoutstd.beta2 <- temp.model.summary$coefficients[3,1]
+
+##############################################
+# Fit distribution of grand means with Gamma #
+##############################################
+temp.summary <- temp.summary[which(temp.summary$GrandMean > 0),]
+
+ggplot(temp.summary, aes(GrandMean)) + geom_histogram(aes(y=..density..),fill="cornflowerblue",color = "black") + xlim(c(0,200)) + ylab("Density")
+
+temp.fit.gamma <- fitdist(temp.summary$GrandMean, "gamma", method="mle")
+grandmean.shape <- temp.fit.gamma$estimate[1]
+grandmean.rate <- temp.fit.gamma$estimate[2]
+
+
+#################################################
+# Fit inter-individual SD as a function of mean #
+#################################################
+ggplot(temp.summary, aes(InterStD)) + geom_histogram(aes(y=..density..),fill="cornflowerblue",color = "black") + xlim(c(0,100)) + ylab("Density")
+
+ggplot(temp.summary,aes(x=GrandMean,y=InterStD)) + geom_point() + stat_smooth(method="glm",formula = y ~ 0 + x, method.args = list(family = gaussian(link = "identity")), size = 1.6) + xlim(c(0,200)) + ylim(c(0,100))
+
+temp.mean.inter <- glm(data = temp.summary, InterStD ~ 0 + GrandMean, family = gaussian(link = "identity"))
+temp.model.summary <- summary(temp.mean.inter)
+inter.beta1 <- temp.model.summary$coefficients[1,1]
+
+
+###########################################################
+# Fit intra-individual variance as a function of the mean #
+###########################################################
+intravar <- intravar[which(intravar$Dispersion > 0 & intravar$Dispersion < 1000),]
+
+ggplot(intravar,aes(x=IntraMean,y=Dispersion)) + geom_point() + stat_smooth(method="glm",formula = y ~ I(1/x), method.args = list(family = gaussian(link = "log")), size = 1.6) + xlim(c(0,50)) + ylim(c(0,100))
+
+temp.mean.intra <- glm(data = intravar, Dispersion ~ I(1/IntraMean), family = gaussian(link = "log"))
+temp.model.summary <- summary(temp.mean.intra)
+intra.beta0 <- temp.model.summary$coefficients[1,1]
+intra.beta1 <- temp.model.summary$coefficients[2,1]
+
+rm(list = ls()[grepl("temp", ls())])
+```
+
