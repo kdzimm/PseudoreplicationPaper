@@ -3,7 +3,7 @@ This repository contains the R code used to carry out parameter estimation, corr
 
 There are four folders: Parameter_Estimation, Correlation, Type_1_Error, and Power. Each folder contains R code and descriptor file. 
 
-### It is highly recommended you download and walk through the "Simulation Example" html in the parameter estimation folder to get an understanding of how the simulation steps work prior to attempting to implement any of the power or type 1 error scripts. 
+### It is highly recommended you download and walk through the "Simulation-Example" html in the parameter estimation folder prior to attempting to implement any of the power or type 1 error scripts. 
 
 There is no package to install for these particular functions, but a number of dependencies are required. They are listed below. All code here was executed in R versions 3.5.1 or later. 
 
