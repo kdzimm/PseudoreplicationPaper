@@ -6,3 +6,5 @@ This is the R code used to estimate the parameters we used to simulate hierarchi
   4) Estimate the linear relationship between inter-individual standard deviation and the grand mean .
   5) Estimate the logarithmic relationship between intra-indvidual means and intra-indivdiual dispersion parameters. 
   6) Simulate.
+  
+An example html with results included is provided. Download and walk through each step to get a good visual of how the simulation works. 
